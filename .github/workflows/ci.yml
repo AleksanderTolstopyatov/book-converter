@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  # ── Проверка синтаксиса и импортов (быстро, без GUI) ─────────────────
+  lint:
+    name: Lint (Python syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps (headless)
+        run: |
+          pip install PySide6 mutagen Pillow
+
+      - name: Check syntax
+        run: python -m py_compile main.py converter.py widgets.py build.py
+
+      - name: Import check
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -c "from converter import Chapter, ConversionWorker, _find_binary"
+          python -c "import ast; ast.parse(open('widgets.py').read())"
+          python -c "import ast; ast.parse(open('main.py').read())"
+
+  # ── Сборка под macOS ──────────────────────────────────────────────────
+  build-macos:
+    name: Build (macOS)
+    runs-on: macos-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ffmpeg
+        run: brew install ffmpeg
+
+      - name: Install Python deps
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Build
+        run: python build.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioBook-Maker-macOS
+          path: dist/AudioBook Maker.app
+          retention-days: 7
+
+  # ── Сборка под Windows ────────────────────────────────────────────────
+  build-windows:
+    name: Build (Windows)
+    runs-on: windows-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ffmpeg
+        run: |
+          choco install ffmpeg --yes
+
+      - name: Install Python deps
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Build
+        run: python build.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioBook-Maker-Windows
+          path: "dist/AudioBook Maker.exe"
+          retention-days: 7
+
+  # ── Сборка под Linux ──────────────────────────────────────────────────
+  build-linux:
+    name: Build (Linux)
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y ffmpeg libglib2.0-0 libgl1 libegl1 \
+            libfontconfig1 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0
+
+      - name: Install Python deps
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Build
+        run: python build.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioBook-Maker-Linux
+          path: "dist/AudioBook Maker"
+          retention-days: 7
