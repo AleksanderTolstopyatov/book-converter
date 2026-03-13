@@ -1,7 +1,7 @@
 # AudioBook Maker
 
-[![CI](https://github.com/YOUR_USERNAME/YOUR_REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/YOUR_REPO/actions/workflows/ci.yml)
-[![Release](https://github.com/YOUR_USERNAME/YOUR_REPO/actions/workflows/release.yml/badge.svg)](https://github.com/YOUR_USERNAME/YOUR_REPO/releases)
+[![CI](https://github.com/AleksanderTolstopyatov/book-converter/actions/workflows/ci.yml/badge.svg)](https://github.com/AleksanderTolstopyatov/book-converter/actions/workflows/ci.yml)
+[![Release](https://github.com/AleksanderTolstopyatov/book-converter/actions/workflows/release.yml/badge.svg)](https://github.com/AleksanderTolstopyatov/book-converter/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Конвертирует набор MP3/M4A/FLAC/WAV файлов в одну аудиокнигу M4B с главами, обложкой и метаданными.  
@@ -94,4 +94,4 @@ git push origin v1.0.0
 ```
 
 GitHub Actions соберёт бинарники под macOS, Windows и Linux и опубликует их
-в [Releases](https://github.com/YOUR_USERNAME/YOUR_REPO/releases) с описанием и таблицей скачивания.
+в [Releases](https://github.com/AleksanderTolstopyatov/book-converter/releases) с описанием и таблицей скачивания.
