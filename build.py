@@ -34,7 +34,7 @@ def find_binary(name: str) -> Path:
             return c
 
     raise FileNotFoundError(
-        f"{name} не найден в PATH. Установите ffmpeg сначала:\n"
+        f"{name} was not found in PATH. Install ffmpeg first:\n"
         "  macOS:   brew install ffmpeg\n"
         "  Windows: winget install ffmpeg\n"
         "  Linux:   sudo apt install ffmpeg"
@@ -43,12 +43,12 @@ def find_binary(name: str) -> Path:
 
 def main():
     system = platform.system()
-    print(f"Сборка для {system}…")
+    print(f"Build for {system}...")
 
     ffmpeg_path = find_binary("ffmpeg")
     ffprobe_path = find_binary("ffprobe")
-    print(f"  ffmpeg  → {ffmpeg_path}")
-    print(f"  ffprobe → {ffprobe_path}")
+    print(f"  ffmpeg  -> {ffmpeg_path}")
+    print(f"  ffprobe -> {ffprobe_path}")
 
     # Разделитель для --add-binary: ':' на macOS/Linux, ';' на Windows
     sep = ";" if system == "Windows" else ":"
@@ -72,20 +72,20 @@ def main():
         "main.py",
     ]
 
-    print("\nЗапуск PyInstaller:")
+    print("\nRunning PyInstaller:")
     print("  " + " ".join(str(c) for c in cmd))
     print()
 
     result = subprocess.run(cmd)
     if result.returncode != 0:
-        print("\nОшибка сборки!")
+        print("\nBuild failed!")
         sys.exit(1)
 
     dist_path = Path("dist") / (app_name + (".exe" if system == "Windows" else ""))
     if system == "Darwin":
         dist_path = Path("dist") / (app_name + ".app")
 
-    print(f"\n✓ Готово: {dist_path.resolve()}")
+    print(f"\nDone: {dist_path.resolve()}")
 
 
 if __name__ == "__main__":
