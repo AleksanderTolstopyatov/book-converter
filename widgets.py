@@ -6,8 +6,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QIcon, QFont
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -31,24 +31,30 @@ class ChapterItemWidget(QWidget):
         self.file_path = file_path
         self._item_ref: Optional[QListWidgetItem] = None
 
+        # Фиксированная высота строки устраняет смещения между платформами.
+        self.setFixedHeight(34)
+
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setContentsMargins(6, 3, 6, 3)
         layout.setSpacing(6)
 
         # Иконка перетаскивания
         drag_lbl = QLabel("⠿")
-        drag_lbl.setFont(QFont("", 16))
+        drag_lbl.setFont(QFont("", 15))
+        drag_lbl.setFixedWidth(16)
+        drag_lbl.setAlignment(Qt.AlignCenter)
         drag_lbl.setCursor(Qt.OpenHandCursor)
         drag_lbl.setToolTip("Перетащите для изменения порядка")
         drag_lbl.setStyleSheet("color: #888;")
-        layout.addWidget(drag_lbl)
+        layout.addWidget(drag_lbl, 0, Qt.AlignVCenter)
 
         # Поле с названием главы
         self.title_edit = QLineEdit(chapter_title)
         self.title_edit.setPlaceholderText("Название главы…")
+        self.title_edit.setFixedHeight(26)
         self.title_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.title_edit.textChanged.connect(self.title_changed)
-        layout.addWidget(self.title_edit)
+        layout.addWidget(self.title_edit, 1, Qt.AlignVCenter)
 
         # Имя файла (серый текст)
         fname = Path(file_path).name
@@ -56,33 +62,37 @@ class ChapterItemWidget(QWidget):
         file_lbl.setStyleSheet("color: #888; font-size: 11px;")
         file_lbl.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         file_lbl.setToolTip(file_path)
-        layout.addWidget(file_lbl)
+        layout.addWidget(file_lbl, 0, Qt.AlignVCenter)
 
         # Кнопка удалить
-        btn_remove = QPushButton("✕")
-        btn_remove.setFixedSize(24, 24)
+        btn_remove = QPushButton("×")
+        btn_remove.setFixedSize(22, 22)
+        btn_remove.setFont(QFont("", 15, QFont.Bold))
         btn_remove.setStyleSheet(
             """
             QPushButton {
                 border: none;
-                color: #fff;
-                background: #c0392b;
+                color: #c0392b;
+                background: transparent;
                 font-weight: bold;
-                border-radius: 4px;
+                border-radius: 11px;
+                padding: 0;
+                min-width: 22px;
+                min-height: 22px;
             }
             QPushButton:hover {
-                background: #e74c3c;
-                color: #fff;
+                color: #e74c3c;
+                background: rgba(192,57,43,0.08);
             }
             QPushButton:pressed {
-                background: #a93226;
-                color: #fff;
+                color: #a93226;
+                background: rgba(192,57,43,0.16);
             }
             """
         )
         btn_remove.setToolTip("Удалить из списка")
         btn_remove.clicked.connect(self._on_remove)
-        layout.addWidget(btn_remove)
+        layout.addWidget(btn_remove, 0, Qt.AlignVCenter)
 
     def set_item_ref(self, item: QListWidgetItem):
         self._item_ref = item
@@ -153,7 +163,7 @@ class ChapterListWidget(QListWidget):
         widget.set_item_ref(item)
         widget.remove_requested.connect(self._remove_item)
         widget.title_changed.connect(self.chapters_changed)
-        item.setSizeHint(widget.sizeHint())
+        item.setSizeHint(QSize(0, 36))
         self.addItem(item)
         self.setItemWidget(item, widget)
         self.chapters_changed.emit()
