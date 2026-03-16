@@ -62,8 +62,23 @@ class ChapterItemWidget(QWidget):
         btn_remove = QPushButton("✕")
         btn_remove.setFixedSize(24, 24)
         btn_remove.setStyleSheet(
-            "QPushButton { border: none; color: #c0392b; font-weight: bold; }"
-            "QPushButton:hover { color: #e74c3c; }"
+            """
+            QPushButton {
+                border: none;
+                color: #fff;
+                background: #c0392b;
+                font-weight: bold;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background: #e74c3c;
+                color: #fff;
+            }
+            QPushButton:pressed {
+                background: #a93226;
+                color: #fff;
+            }
+            """
         )
         btn_remove.setToolTip("Удалить из списка")
         btn_remove.clicked.connect(self._on_remove)

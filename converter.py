@@ -69,19 +69,39 @@ def _ffmpeg() -> str:
     return _find_binary("ffmpeg")
 
 
+def _run_checked(cmd: list[str], step: str) -> subprocess.CompletedProcess:
+    """Запускает процесс и возвращает подробную ошибку при неуспехе."""
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        stderr_tail = (result.stderr or "").strip()[-3000:]
+        stdout_tail = (result.stdout or "").strip()[-3000:]
+        details = stderr_tail or stdout_tail or "No output from process."
+        cmd_preview = " ".join(f'"{part}"' if " " in part else part for part in cmd)
+        raise RuntimeError(
+            f"{step} failed (exit code {result.returncode}).\n"
+            f"Command: {cmd_preview}\n\n"
+            f"Process output:\n{details}"
+        )
+    return result
+
+
 def get_duration_seconds(file_path: str) -> float:
     """Возвращает длительность аудиофайла в секундах через ffprobe."""
     ffprobe = _find_binary("ffprobe")
-    result = subprocess.run(
+    result = _run_checked(
         [
             ffprobe, "-v", "quiet",
             "-print_format", "json",
             "-show_format",
             file_path,
         ],
-        capture_output=True,
-        text=True,
-        check=True,
+        step=f"Reading duration for {Path(file_path).name}",
     )
     info = json.loads(result.stdout)
     return float(info["format"]["duration"])
@@ -125,9 +145,14 @@ class ConversionWorker(QThread):
     # ------------------------------------------------------------------
     def _convert(self):
         ffmpeg = _ffmpeg()
+        ffprobe = _find_binary("ffprobe")
         tmp_dir = tempfile.mkdtemp(prefix="audiobook_")
 
         try:
+            # Preflight: часто на Windows ffmpeg.exe не стартует из-за отсутствующих DLL.
+            _run_checked([ffmpeg, "-version"], step="ffmpeg preflight check")
+            _run_checked([ffprobe, "-version"], step="ffprobe preflight check")
+
             total = len(self.chapters)
             aac_files: list[str] = []
 
@@ -137,7 +162,7 @@ class ConversionWorker(QThread):
                     return
                 self.status.emit(f"Конвертация {i+1}/{total}: {Path(ch.file_path).name}")
                 aac_path = os.path.join(tmp_dir, f"chapter_{i:04d}.m4a")
-                subprocess.run(
+                _run_checked(
                     [
                         ffmpeg, "-y", "-i", ch.file_path,
                         "-vn",                  # без видео
@@ -146,8 +171,7 @@ class ConversionWorker(QThread):
                         "-ar", "44100",
                         aac_path,
                     ],
-                    capture_output=True,
-                    check=True,
+                    step=f"Converting chapter {i+1}/{total}",
                 )
                 aac_files.append(aac_path)
                 self.progress.emit(int((i + 1) / total * 60))  # 0-60%
@@ -164,7 +188,7 @@ class ConversionWorker(QThread):
                     f.write(f"file '{safe}'\n")
 
             merged = os.path.join(tmp_dir, "merged.m4a")
-            subprocess.run(
+            _run_checked(
                 [
                     ffmpeg, "-y",
                     "-f", "concat", "-safe", "0",
@@ -172,8 +196,7 @@ class ConversionWorker(QThread):
                     "-c", "copy",
                     merged,
                 ],
-                capture_output=True,
-                check=True,
+                step="Merging chapters",
             )
             self.progress.emit(75)
 
@@ -234,7 +257,7 @@ class ConversionWorker(QThread):
                 self.output_path,
             ]
 
-            subprocess.run(cmd, capture_output=True, check=True)
+            _run_checked(cmd, step="Final M4B muxing")
             self.progress.emit(100)
             self.status.emit("Готово!")
             self.finished.emit(self.output_path)

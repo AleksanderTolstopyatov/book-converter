@@ -50,6 +50,14 @@ def main():
     print(f"  ffmpeg  -> {ffmpeg_path}")
     print(f"  ffprobe -> {ffprobe_path}")
 
+    extra_binaries: list[str] = []
+    if system == "Windows":
+        # Some Windows ffmpeg builds depend on sibling DLL files.
+        for dll in sorted(ffmpeg_path.parent.glob("*.dll")):
+            extra_binaries.append(str(dll))
+        if extra_binaries:
+            print(f"  extra dlls -> {len(extra_binaries)}")
+
     # Разделитель для --add-binary: ':' на macOS/Linux, ';' на Windows
     sep = ";" if system == "Windows" else ":"
 
@@ -68,6 +76,7 @@ def main():
         "--name", app_name,
         f"--add-binary={ffmpeg_path}{sep}.",
         f"--add-binary={ffprobe_path}{sep}.",
+        *[f"--add-binary={dll}{sep}." for dll in extra_binaries],
         *icon_flag,
         "main.py",
     ]
