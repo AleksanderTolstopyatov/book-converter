@@ -393,13 +393,15 @@ class MainWindow(QMainWindow):
     def _on_finished(self, output_path: str):
         self._reset_ui()
         self.progress_bar.setValue(100)
-        reply = QMessageBox.information(
-            self,
-            "Готово!",
-            f"Аудиокнига успешно создана:\n{output_path}\n\nОткрыть папку?",
-            QMessageBox.Open | QMessageBox.Close,
-        )
-        if reply == QMessageBox.Open:
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Готово!")
+        msg.setIcon(QMessageBox.Information)
+        msg.setText(f"Аудиокнига успешно создана:\n{output_path}")
+        msg.setInformativeText("Открыть папку?")
+        btn_open = msg.addButton("Открыть", QMessageBox.AcceptRole)
+        msg.addButton("Закрыть", QMessageBox.RejectRole)
+        msg.exec()
+        if msg.clickedButton() == btn_open:
             self._open_in_finder(output_path)
 
     def _on_error(self, message: str):
@@ -418,7 +420,8 @@ class MainWindow(QMainWindow):
         if system == "Darwin":
             subprocess.Popen(["open", "-R", path])
         elif system == "Windows":
-            subprocess.Popen(["explorer", "/select,", path])
+            # explorer /select выделяет файл в папке без диалога открытия
+            subprocess.Popen(["explorer", f"/select,{path}"])
         else:
             subprocess.Popen(["xdg-open", str(Path(path).parent)])
 

@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -67,6 +69,39 @@ def _find_binary(name: str) -> str:
 
 def _ffmpeg() -> str:
     return _find_binary("ffmpeg")
+
+
+def _embed_cover(m4b_path: str, cover_path: str) -> None:
+    """Вшивает обложку в M4B через mutagen (covr-атом MP4).
+
+    Apple Books, VLC и все совместимые плееры читают именно covr-атом,
+    а не видеодорожку. WEBP/BMP конвертируются в JPEG через Pillow.
+    """
+    from mutagen.mp4 import MP4, MP4Cover
+
+    ext = Path(cover_path).suffix.lower()
+
+    if ext in (".jpg", ".jpeg"):
+        img_fmt = MP4Cover.FORMAT_JPEG
+        with open(cover_path, "rb") as f:
+            cover_data = f.read()
+    elif ext == ".png":
+        img_fmt = MP4Cover.FORMAT_PNG
+        with open(cover_path, "rb") as f:
+            cover_data = f.read()
+    else:
+        # WEBP, BMP и прочие — конвертируем в JPEG через Pillow
+        from PIL import Image
+        import io
+        with Image.open(cover_path) as img:
+            buf = io.BytesIO()
+            img.convert("RGB").save(buf, format="JPEG", quality=90)
+            cover_data = buf.getvalue()
+        img_fmt = MP4Cover.FORMAT_JPEG
+
+    tags = MP4(m4b_path)
+    tags["covr"] = [MP4Cover(cover_data, imageformat=img_fmt)]
+    tags.save()
 
 
 def _windows_no_console_kwargs() -> dict:
@@ -221,52 +256,79 @@ class ConversionWorker(QThread):
         tmp_dir = tempfile.mkdtemp(prefix="audiobook_")
 
         try:
-            # Preflight: часто на Windows ffmpeg.exe не стартует из-за отсутствующих DLL.
-            _run_checked([ffmpeg, "-version"], step="ffmpeg preflight check")
-            _run_checked([ffprobe, "-version"], step="ffprobe preflight check")
-
             out_dir = Path(self.output_path).resolve().parent
             out_dir.mkdir(parents=True, exist_ok=True)
 
             total = len(self.chapters)
-            aac_files: list[str] = []
+            # Имена выходных файлов фиксированы заранее для правильного порядка.
+            aac_files: list[str] = [
+                os.path.join(tmp_dir, f"chapter_{i:04d}.m4a") for i in range(total)
+            ]
             source_durations = [max(0.01, get_duration_seconds(ch.file_path)) for ch in self.chapters]
             total_duration = max(0.01, sum(source_durations))
-            processed_duration = 0.0
 
-            # ── Шаг 1: конвертируем каждый MP3 → AAC (.m4a) ─────────────
-            for i, ch in enumerate(self.chapters):
+            # Прогресс каждой главы в секундах: индекс → текущая позиция.
+            # Суммируем все потоки — прогресс всегда только растёт.
+            _lock = threading.Lock()
+            _per_chapter: dict[int, float] = {i: 0.0 for i in range(total)}
+
+            def _emit_progress() -> None:
+                """Считает суммарный прогресс по всем потокам и эмитит сигнал."""
+                total_done = sum(_per_chapter.values())
+                self.progress.emit(int(min(60, total_done / total_duration * 60)))
+
+            def _convert_chapter(i: int) -> None:
+                """Конвертирует одну главу; вызывается из пула потоков."""
                 if self._cancelled:
                     return
-                self.status.emit(f"Конвертация {i+1}/{total}: {Path(ch.file_path).name}")
-                aac_path = os.path.join(tmp_dir, f"chapter_{i:04d}.m4a")
+                ch = self.chapters[i]
+                aac_path = aac_files[i]
                 chapter_duration = source_durations[i]
 
-                def _update_chapter_progress(out_time_sec: float):
+                self.status.emit(f"Конвертация {i+1}/{total}: {Path(ch.file_path).name}")
+
+                def _on_progress(out_time_sec: float):
+                    if self._cancelled:
+                        return
                     if out_time_sec == float("inf"):
                         out_time_sec = chapter_duration
-                    clamped = min(chapter_duration, max(0.0, out_time_sec))
-                    absolute = (processed_duration + clamped) / total_duration
-                    self.progress.emit(int(min(60, max(0, absolute * 60))))
+                    with _lock:
+                        _per_chapter[i] = min(chapter_duration, max(_per_chapter[i], out_time_sec))
+                        _emit_progress()
 
-                progress_cmd = [
-                    ffmpeg, "-y", "-v", "error", "-nostats",
-                    "-progress", "pipe:1",
-                    "-i", ch.file_path,
-                    "-vn",                  # без видео
-                    "-c:a", "aac",
-                    "-b:a", "128k",
-                    "-ar", "44100",
-                    aac_path,
-                ]
                 _run_ffmpeg_with_progress(
-                    progress_cmd,
+                    [
+                        ffmpeg, "-y", "-v", "error", "-nostats",
+                        "-progress", "pipe:1",
+                        "-i", ch.file_path,
+                        "-vn",
+                        "-c:a", "aac",
+                        "-b:a", "128k",
+                        "-ar", "44100",
+                        aac_path,
+                    ],
                     step=f"Converting chapter {i+1}/{total}",
-                    on_progress=_update_chapter_progress,
+                    on_progress=_on_progress,
                 )
-                aac_files.append(aac_path)
-                processed_duration += chapter_duration
-                self.progress.emit(int(min(60, max(0, (processed_duration / total_duration) * 60))))
+
+                with _lock:
+                    _per_chapter[i] = chapter_duration
+                    _emit_progress()
+
+            # ── Шаг 1: параллельная конвертация MP3 → AAC ────────────────
+            # Используем min(4, total) потоков — больше нет смысла,
+            # т.к. ffmpeg сам использует несколько ядер внутри.
+            workers = min(4, total, os.cpu_count() or 4)
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(_convert_chapter, i): i for i in range(total)}
+                for future in as_completed(futures):
+                    if self._cancelled:
+                        pool.shutdown(wait=False, cancel_futures=True)
+                        return
+                    exc = future.exception()
+                    if exc:
+                        pool.shutdown(wait=False, cancel_futures=True)
+                        raise exc
 
             # ── Шаг 2: конкатенируем через concat demuxer ─────────────────
             if self._cancelled:
@@ -324,49 +386,31 @@ class ConversionWorker(QThread):
                 return
             self.status.emit("Финальная сборка M4B…")
 
-            cmd_base = [
-                ffmpeg, "-y",
-                "-i", merged,
-                "-f", "ffmetadata",
-                "-i", meta_file,
-                "-map_metadata", "1",
-                "-map_chapters", "1",
-            ]
-
-            cmd_with_cover = None
-            if self.cover_path and os.path.isfile(self.cover_path):
-                cmd_with_cover = cmd_base + [
-                    "-i", self.cover_path,
+            # ── Шаг 4: финальная сборка M4B (без обложки — её добавим через mutagen) ─
+            _run_checked(
+                [
+                    ffmpeg, "-y",
+                    "-i", merged,
+                    "-f", "ffmetadata", "-i", meta_file,
                     "-map", "0:a",
-                    "-map", "2:v",
-                    "-c:v", "copy",
-                    "-disposition:v", "attached_pic",
-                ]
-
-            cmd_no_cover = cmd_base + [
-                "-map", "0:a",
-                "-c:a", "copy",
-                "-movflags", "+faststart",
-                self.output_path,
-            ]
-
-            if cmd_with_cover is not None:
-                cmd_with_cover += [
+                    "-map_metadata", "1",
+                    "-map_chapters", "1",
                     "-c:a", "copy",
                     "-movflags", "+faststart",
                     self.output_path,
-                ]
+                ],
+                step="Final M4B muxing",
+            )
+            self.progress.emit(95)
 
-            # Иногда конкретная обложка/кодек не поддерживаются контейнером M4B.
-            # В таком случае сохраняем книгу без обложки вместо полного провала.
-            if cmd_with_cover is not None:
+            # ── Шаг 5: обложка через mutagen (covr атом — единственный надёжный способ) ─
+            if self.cover_path and os.path.isfile(self.cover_path):
+                self.status.emit("Добавление обложки…")
                 try:
-                    _run_checked(cmd_with_cover, step="Final M4B muxing (with cover)")
-                except Exception:
-                    self.status.emit("Обложка не применена, повтор без обложки…")
-                    _run_checked(cmd_no_cover, step="Final M4B muxing (without cover)")
-            else:
-                _run_checked(cmd_no_cover, step="Final M4B muxing")
+                    _embed_cover(self.output_path, self.cover_path)
+                except Exception as e:
+                    # Обложка не критична — книга уже создана, просто предупреждаем.
+                    self.status.emit(f"Обложка не добавлена: {e}")
 
             self.progress.emit(100)
             self.status.emit("Готово!")
