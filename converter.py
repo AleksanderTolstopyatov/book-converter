@@ -214,6 +214,42 @@ def get_duration_seconds(file_path: str) -> float:
     return float(info["format"]["duration"])
 
 
+def get_audio_bitrate_kbps(file_path: str) -> Optional[int]:
+    """Возвращает битрейт исходного аудио в kbps, если его удалось определить."""
+    ffprobe = _find_binary("ffprobe")
+    result = _run_checked(
+        [
+            ffprobe,
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_streams",
+            "-show_format",
+            file_path,
+        ],
+        step=f"Reading bitrate for {Path(file_path).name}",
+    )
+    info = json.loads(result.stdout)
+
+    stream_bitrate = None
+    for stream in info.get("streams", []):
+        if stream.get("codec_type") == "audio":
+            stream_bitrate = stream.get("bit_rate")
+            break
+
+    raw_bitrate = stream_bitrate or info.get("format", {}).get("bit_rate")
+    if not raw_bitrate:
+        return None
+
+    try:
+        bps = int(raw_bitrate)
+    except (TypeError, ValueError):
+        return None
+
+    if bps <= 0:
+        return None
+    return max(1, round(bps / 1000))
+
+
 class ConversionWorker(QThread):
     """Фоновый поток конвертации. Эмитирует сигналы прогресса и статуса."""
 
@@ -228,6 +264,7 @@ class ConversionWorker(QThread):
         output_path: str,
         title: str,
         author: str,
+        audio_bitrate_kbps: int,
         cover_path: Optional[str],
         parent=None,
     ):
@@ -236,6 +273,7 @@ class ConversionWorker(QThread):
         self.output_path = output_path
         self.title = title
         self.author = author
+        self.audio_bitrate_kbps = max(32, int(audio_bitrate_kbps))
         self.cover_path = cover_path
         self._cancelled = False
 
@@ -303,7 +341,7 @@ class ConversionWorker(QThread):
                         "-i", ch.file_path,
                         "-vn",
                         "-c:a", "aac",
-                        "-b:a", "128k",
+                        "-b:a", f"{self.audio_bitrate_kbps}k",
                         "-ar", "44100",
                         aac_path,
                     ],

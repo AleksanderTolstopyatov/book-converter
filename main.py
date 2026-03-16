@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from collections import Counter
 
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QPixmap, QIcon, QFont, QDragEnterEvent, QDropEvent
@@ -21,13 +22,14 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSlider,
     QSizePolicy,
     QStatusBar,
     QVBoxLayout,
     QWidget,
 )
 
-from converter import Chapter, ConversionWorker
+from converter import Chapter, ConversionWorker, get_audio_bitrate_kbps
 from widgets import ChapterListWidget
 
 DARK_STYLE = """
@@ -61,6 +63,27 @@ QLineEdit {
 }
 QLineEdit:focus {
     border-color: #0e639c;
+}
+QSlider::groove:horizontal {
+    border: 1px solid #555;
+    height: 6px;
+    border-radius: 3px;
+    background: #2d2d2d;
+}
+QSlider::sub-page:horizontal {
+    background: #0e639c;
+    border-radius: 3px;
+}
+QSlider::add-page:horizontal {
+    background: #2d2d2d;
+    border-radius: 3px;
+}
+QSlider::handle:horizontal {
+    background: #d4d4d4;
+    border: 1px solid #888;
+    width: 14px;
+    margin: -5px 0;
+    border-radius: 7px;
 }
 QPushButton {
     background-color: #0e639c;
@@ -180,12 +203,17 @@ class CoverLabel(QLabel):
 
 
 class MainWindow(QMainWindow):
+    BITRATE_MIN = 64
+    BITRATE_MAX = 320
+    BITRATE_STEP = 8
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("AudioBook Maker")
         self.setMinimumSize(700, 620)
         self.resize(800, 700)
         self._worker: ConversionWorker | None = None
+        self._bitrate_cache: dict[str, int | None] = {}
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -268,6 +296,35 @@ class MainWindow(QMainWindow):
         fields.addWidget(lbl_output, 2, 0)
         fields.addLayout(out_row, 2, 1)
 
+        lbl_bitrate = QLabel("Битрейт:")
+        self.slider_bitrate = QSlider(Qt.Horizontal)
+        self.slider_bitrate.setRange(self.BITRATE_MIN, self.BITRATE_MAX)
+        self.slider_bitrate.setSingleStep(self.BITRATE_STEP)
+        self.slider_bitrate.setPageStep(32)
+        self.slider_bitrate.setTickInterval(32)
+        self.slider_bitrate.setTickPosition(QSlider.TicksBelow)
+        self.slider_bitrate.valueChanged.connect(self._on_bitrate_slider_changed)
+        self.label_bitrate_value = QLabel("128k")
+        self.label_bitrate_value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._set_bitrate_slider_value(128)
+
+        bitrate_row = QHBoxLayout()
+        bitrate_row.setContentsMargins(0, 0, 0, 0)
+        bitrate_row.setSpacing(8)
+        bitrate_row.addWidget(self.slider_bitrate, 1)
+        bitrate_row.addWidget(self.label_bitrate_value, 0)
+
+        self.label_bitrate_hint = QLabel("По умолчанию: 128k")
+        self.label_bitrate_hint.setStyleSheet("color: #888; font-size: 11px;")
+        bitrate_col = QVBoxLayout()
+        bitrate_col.setContentsMargins(0, 0, 0, 0)
+        bitrate_col.setSpacing(2)
+        bitrate_col.addLayout(bitrate_row)
+        bitrate_col.addWidget(self.label_bitrate_hint)
+
+        fields.addWidget(lbl_bitrate, 3, 0)
+        fields.addLayout(bitrate_col, 3, 1)
+
         fields_widget = QWidget()
         fields_widget.setLayout(fields)
         meta_layout.addWidget(fields_widget)
@@ -344,6 +401,71 @@ class MainWindow(QMainWindow):
 
     def _update_convert_btn(self):
         self.btn_convert.setEnabled(self.chapter_list.count() > 0)
+        self._update_bitrate_default()
+
+    def _selected_bitrate_kbps(self) -> int:
+        return int(self.slider_bitrate.value())
+
+    def _normalize_bitrate(self, kbps: int) -> int:
+        bounded = max(self.BITRATE_MIN, min(self.BITRATE_MAX, int(kbps)))
+        step = self.BITRATE_STEP
+        return int(round(bounded / step) * step)
+
+    def _set_bitrate_slider_value(self, kbps: int) -> None:
+        self.slider_bitrate.setValue(self._normalize_bitrate(kbps))
+
+    def _on_bitrate_slider_changed(self, value: int):
+        self.label_bitrate_value.setText(f"{value}k")
+
+    def _nearest_slider_bitrate(self, kbps: int) -> int:
+        return self._normalize_bitrate(kbps)
+
+    def _update_bitrate_default(self):
+        chapters_data = self.chapter_list.get_chapters()
+        file_paths = [fp for fp, _ in chapters_data]
+
+        if not file_paths:
+            self._set_bitrate_slider_value(128)
+            self.label_bitrate_hint.setText("По умолчанию: 128k")
+            return
+
+        for file_path in file_paths:
+            if file_path in self._bitrate_cache:
+                continue
+            try:
+                self._bitrate_cache[file_path] = get_audio_bitrate_kbps(file_path)
+            except Exception:
+                self._bitrate_cache[file_path] = None
+
+        detected = [self._bitrate_cache.get(fp) for fp in file_paths]
+        known = [int(v) for v in detected if isinstance(v, int)]
+
+        if not known:
+            self._set_bitrate_slider_value(128)
+            self.label_bitrate_hint.setText("Не удалось определить битрейт файлов. Используется 128k.")
+            return
+
+        unique = sorted(set(known))
+        if len(unique) == 1:
+            selected = self._nearest_slider_bitrate(unique[0])
+            self._set_bitrate_slider_value(selected)
+            self.label_bitrate_hint.setText(f"Определен битрейт исходников: {unique[0]}k")
+            return
+
+        # Для смешанных битрейтов выбираем моду (самое частое значение).
+        # Если есть несколько лидеров, берём большее, чтобы меньше терять качество.
+        counts = Counter(known)
+        max_count = max(counts.values())
+        candidates = [bitrate for bitrate, c in counts.items() if c == max_count]
+        auto_choice = max(candidates)
+        selected = self._nearest_slider_bitrate(auto_choice)
+        min_kbps = min(unique)
+        max_kbps = max(unique)
+
+        self._set_bitrate_slider_value(selected)
+        self.label_bitrate_hint.setText(
+            f"Разные битрейты ({min_kbps}k-{max_kbps}k). По умолчанию выбран {selected}k (самый частый)."
+        )
 
     def _start_conversion(self):
         # Валидация
@@ -375,6 +497,7 @@ class MainWindow(QMainWindow):
             output_path=output,
             title=title,
             author=author,
+            audio_bitrate_kbps=self._selected_bitrate_kbps(),
             cover_path=self.cover_label.cover_path,
         )
         self._worker.progress.connect(self.progress_bar.setValue)
@@ -402,7 +525,7 @@ class MainWindow(QMainWindow):
         msg.addButton("Закрыть", QMessageBox.RejectRole)
         msg.exec()
         if msg.clickedButton() == btn_open:
-            self._open_in_finder(output_path)
+            self._open_output_folder(output_path)
 
     def _on_error(self, message: str):
         self._reset_ui()
@@ -414,16 +537,16 @@ class MainWindow(QMainWindow):
         self.btn_cancel.setVisible(False)
 
     @staticmethod
-    def _open_in_finder(path: str):
+    def _open_output_folder(path: str):
         import subprocess, platform
+        target_dir = str(Path(path).resolve().parent)
         system = platform.system()
         if system == "Darwin":
-            subprocess.Popen(["open", "-R", path])
+            subprocess.Popen(["open", target_dir])
         elif system == "Windows":
-            # explorer /select выделяет файл в папке без диалога открытия
-            subprocess.Popen(["explorer", f"/select,{path}"])
+            subprocess.Popen(["explorer", target_dir])
         else:
-            subprocess.Popen(["xdg-open", str(Path(path).parent)])
+            subprocess.Popen(["xdg-open", target_dir])
 
 
 def main():
