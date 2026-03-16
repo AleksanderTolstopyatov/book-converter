@@ -13,11 +13,16 @@
 - Изменение **порядка глав** перетаскиванием
 - Переименование **названий глав**
 - Выбор **обложки** (JPG/PNG/WEBP)
-- Поля: название книги, автор
-- Выбор пути сохранения `.m4b`
-- Прогресс-бар конвертации
+- Поля: название, автор, путь сохранения
+- Настройка битрейта и прогресс-бар конвертации
 - Тёмная тема
 - Работает на **macOS / Windows / Linux**
+
+## Скриншоты
+
+### Главное окно
+
+![Главное окно](docs/screenshots/main-window-overview.png)
 
 ## Требования
 
@@ -46,6 +51,41 @@ pip install -r requirements.txt
 
 # 4. Запустить
 python main.py
+```
+
+## Запуск в venv (разные ОС)
+
+### macOS / Linux
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python main.py
+```
+
+### Windows (PowerShell)
+
+```powershell
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python main.py
+```
+
+### Windows (cmd)
+
+```bat
+py -m venv .venv
+.venv\Scripts\activate.bat
+pip install -r requirements.txt
+python main.py
+```
+
+Для выхода из окружения на любой системе:
+
+```bash
+deactivate
 ```
 
 ## Структура проекта
