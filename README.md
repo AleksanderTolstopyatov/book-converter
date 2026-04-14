@@ -24,6 +24,14 @@
 
 ![Главное окно](docs/screenshots/main-window-overview.png)
 
+### Настройка битрейта
+
+![Настройка битрейта](docs/screenshots/bitrate-slider.png)
+
+### Окно завершения
+
+![Окно завершения](docs/screenshots/finish-modal.png)
+
 ## Требования
 
 | Зависимость | Установка |
