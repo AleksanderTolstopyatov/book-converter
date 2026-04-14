@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,10 @@ from PySide6.QtCore import QThread, Signal
 class Chapter:
     file_path: str
     title: str
+
+
+class ConversionCancelled(Exception):
+    """Raised when conversion is cancelled by user."""
 
 
 def _bundle_dir() -> Path:
@@ -79,25 +84,26 @@ def _embed_cover(m4b_path: str, cover_path: str) -> None:
     """
     from mutagen.mp4 import MP4, MP4Cover
 
-    ext = Path(cover_path).suffix.lower()
+    # MP4 covr-атом надежно поддерживает JPEG/PNG; остальные форматы
+    # конвертируем в JPEG независимо от расширения файла.
+    from PIL import Image
+    import io
 
-    if ext in (".jpg", ".jpeg"):
-        img_fmt = MP4Cover.FORMAT_JPEG
-        with open(cover_path, "rb") as f:
-            cover_data = f.read()
-    elif ext == ".png":
-        img_fmt = MP4Cover.FORMAT_PNG
-        with open(cover_path, "rb") as f:
-            cover_data = f.read()
-    else:
-        # WEBP, BMP и прочие — конвертируем в JPEG через Pillow
-        from PIL import Image
-        import io
-        with Image.open(cover_path) as img:
+    with Image.open(cover_path) as img:
+        detected = (img.format or "").upper()
+        if detected in ("JPEG", "JPG"):
+            with open(cover_path, "rb") as f:
+                cover_data = f.read()
+            img_fmt = MP4Cover.FORMAT_JPEG
+        elif detected == "PNG":
+            with open(cover_path, "rb") as f:
+                cover_data = f.read()
+            img_fmt = MP4Cover.FORMAT_PNG
+        else:
             buf = io.BytesIO()
             img.convert("RGB").save(buf, format="JPEG", quality=90)
             cover_data = buf.getvalue()
-        img_fmt = MP4Cover.FORMAT_JPEG
+            img_fmt = MP4Cover.FORMAT_JPEG
 
     tags = MP4(m4b_path)
     tags["covr"] = [MP4Cover(cover_data, imageformat=img_fmt)]
@@ -127,10 +133,7 @@ def _run_checked(cmd: list[str], step: str) -> subprocess.CompletedProcess:
     }
     run_kwargs.update(_windows_no_console_kwargs())
 
-    result = subprocess.run(
-        cmd,
-        **run_kwargs,
-    )
+    result = subprocess.run(cmd, **run_kwargs)
     if result.returncode != 0:
         stderr_tail = (result.stderr or "").strip()[-3000:]
         stdout_tail = (result.stdout or "").strip()[-3000:]
@@ -148,6 +151,7 @@ def _run_ffmpeg_with_progress(
     cmd: list[str],
     step: str,
     on_progress: Callable[[float], None],
+    cancel_check: Optional[Callable[[], bool]] = None,
 ) -> None:
     """Запускает ffmpeg и репортит прогресс 0..1 по out_time_ms."""
     popen_kwargs: dict = {
@@ -181,6 +185,14 @@ def _run_ffmpeg_with_progress(
                 pass
         elif line.startswith("progress=end"):
             on_progress(float("inf"))
+        if cancel_check and cancel_check():
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+            raise ConversionCancelled("Conversion cancelled")
 
     stderr_tail = ""
     if proc.stderr is not None:
@@ -276,16 +288,91 @@ class ConversionWorker(QThread):
         self.audio_bitrate_kbps = max(32, int(audio_bitrate_kbps))
         self.cover_path = cover_path
         self._cancelled = False
+        self._active_procs: set[subprocess.Popen] = set()
+        self._proc_lock = threading.Lock()
 
     def cancel(self):
         self._cancelled = True
+        self._terminate_active_processes()
+
+    def _register_proc(self, proc: subprocess.Popen) -> None:
+        with self._proc_lock:
+            self._active_procs.add(proc)
+
+    def _unregister_proc(self, proc: subprocess.Popen) -> None:
+        with self._proc_lock:
+            self._active_procs.discard(proc)
+
+    def _terminate_active_processes(self) -> None:
+        with self._proc_lock:
+            procs = list(self._active_procs)
+        for proc in procs:
+            if proc.poll() is None:
+                proc.terminate()
+        for proc in procs:
+            if proc.poll() is None:
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
 
     # ------------------------------------------------------------------
     def run(self):
         try:
             self._convert()
+        except ConversionCancelled:
+            # Отмена пользователем — не показываем как ошибку.
+            pass
         except Exception as exc:
             self.error.emit(str(exc))
+
+    def _run_checked_maybe_cancel(self, cmd: list[str], step: str) -> subprocess.CompletedProcess:
+        """Запускает процесс и позволяет корректно прервать его при отмене."""
+        popen_kwargs: dict = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+        }
+        popen_kwargs.update(_windows_no_console_kwargs())
+
+        proc = subprocess.Popen(cmd, **popen_kwargs)
+        self._register_proc(proc)
+        try:
+            while proc.poll() is None:
+                if self._cancelled:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    raise ConversionCancelled("Conversion cancelled")
+                time.sleep(0.1)
+
+            stdout, stderr = proc.communicate()
+            result = subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+            if result.returncode != 0:
+                stderr_tail = (result.stderr or "").strip()[-3000:]
+                stdout_tail = (result.stdout or "").strip()[-3000:]
+                details = stderr_tail or stdout_tail or "No output from process."
+                cmd_preview = " ".join(f'"{part}"' if " " in part else part for part in cmd)
+                raise RuntimeError(
+                    f"{step} failed (exit code {result.returncode}).\n"
+                    f"Command: {cmd_preview}\n\n"
+                    f"Process output:\n{details}"
+                )
+            return result
+        finally:
+            self._unregister_proc(proc)
+
+    @staticmethod
+    def _escape_ffmetadata(value: str) -> str:
+        """Экранирует спецсимволы для FFmetadata."""
+        escaped = value.replace("\\", "\\\\").replace("\r", "").replace("\n", "\\n")
+        for ch in ("=", ";", "#"):
+            escaped = escaped.replace(ch, "\\" + ch)
+        return escaped
 
     # ------------------------------------------------------------------
     def _convert(self):
@@ -347,6 +434,7 @@ class ConversionWorker(QThread):
                     ],
                     step=f"Converting chapter {i+1}/{total}",
                     on_progress=_on_progress,
+                    cancel_check=lambda: self._cancelled,
                 )
 
                 with _lock:
@@ -380,7 +468,7 @@ class ConversionWorker(QThread):
                     f.write(f"file '{safe}'\n")
 
             merged = os.path.join(tmp_dir, "merged.m4a")
-            _run_checked(
+            self._run_checked_maybe_cancel(
                 [
                     ffmpeg, "-y",
                     "-f", "concat", "-safe", "0",
@@ -402,9 +490,9 @@ class ConversionWorker(QThread):
             meta_file = os.path.join(tmp_dir, "metadata.txt")
             with open(meta_file, "w", encoding="utf-8") as f:
                 f.write(";FFMETADATA1\n")
-                f.write(f"title={self.title}\n")
-                f.write(f"artist={self.author}\n")
-                f.write(f"album={self.title}\n")
+                f.write(f"title={self._escape_ffmetadata(self.title)}\n")
+                f.write(f"artist={self._escape_ffmetadata(self.author)}\n")
+                f.write(f"album={self._escape_ffmetadata(self.title)}\n")
                 f.write("genre=Audiobook\n\n")
 
                 start_ms = 0
@@ -414,7 +502,7 @@ class ConversionWorker(QThread):
                     f.write("TIMEBASE=1/1000\n")
                     f.write(f"START={start_ms}\n")
                     f.write(f"END={end_ms}\n")
-                    f.write(f"title={ch.title}\n\n")
+                    f.write(f"title={self._escape_ffmetadata(ch.title)}\n\n")
                     start_ms = end_ms
 
             self.progress.emit(82)
@@ -425,20 +513,39 @@ class ConversionWorker(QThread):
             self.status.emit("Финальная сборка M4B…")
 
             # ── Шаг 4: финальная сборка M4B (без обложки — её добавим через mutagen) ─
-            _run_checked(
-                [
-                    ffmpeg, "-y",
-                    "-i", merged,
-                    "-f", "ffmetadata", "-i", meta_file,
-                    "-map", "0:a",
-                    "-map_metadata", "1",
-                    "-map_chapters", "1",
-                    "-c:a", "copy",
-                    "-movflags", "+faststart",
-                    self.output_path,
-                ],
-                step="Final M4B muxing",
-            )
+            # Некоторые сборки ffmpeg падают с EINVAL (-22 / code 234) именно на +faststart.
+            # Делаем мягкий fallback без faststart, чтобы не срывать весь экспорт.
+            base_mux_cmd = [
+                ffmpeg, "-y",
+                "-i", merged,
+                "-f", "ffmetadata", "-i", meta_file,
+                "-map", "0:a",
+                "-map_metadata", "1",
+                "-map_chapters", "1",
+                "-c:a", "copy",
+            ]
+
+            try:
+                self._run_checked_maybe_cancel(
+                    [
+                        *base_mux_cmd,
+                        "-movflags", "+faststart",
+                        self.output_path,
+                    ],
+                    step="Final M4B muxing",
+                )
+            except RuntimeError as first_err:
+                self.status.emit("Повтор финальной сборки без faststart…")
+                try:
+                    self._run_checked_maybe_cancel(
+                        [
+                            *base_mux_cmd,
+                            self.output_path,
+                        ],
+                        step="Final M4B muxing (fallback without faststart)",
+                    )
+                except RuntimeError:
+                    raise first_err
             self.progress.emit(95)
 
             # ── Шаг 5: обложка через mutagen (covr атом — единственный надёжный способ) ─
