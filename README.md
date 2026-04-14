@@ -22,15 +22,15 @@
 
 ### Главное окно
 
-![Главное окно](docs/screenshots/main-window-overview.png)
+![Главное окно](docs/screenshots/main-window-overview.png?v=20260414)
 
 ### Настройка битрейта
 
-![Настройка битрейта](docs/screenshots/bitrate-slider.png)
+![Настройка битрейта](docs/screenshots/bitrate-slider.png?v=20260414)
 
 ### Окно завершения
 
-![Окно завершения](docs/screenshots/finish-modal.png)
+![Окно завершения](docs/screenshots/finish-modal.png?v=20260414)
 
 ## Требования
 
